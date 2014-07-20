@@ -3,7 +3,6 @@ package catphish.indoorrowinganalyser;
 
 import android.app.Activity;
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Bundle;
@@ -24,23 +23,19 @@ public class MainActivity extends Activity {
     SignalReceiverService mService;
     boolean mBound = false;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        Intent intent = new Intent(this, SignalReceiverService.class);
-        startService(intent);
-        setContentView(R.layout.activity_main);
-    }
-
     private Runnable runnable = new Runnable() {
         @Override
         public void run() {
             if (mBound) {
+                findViewById(R.id.start_button).setEnabled(!mService.isRunning());
+                findViewById(R.id.stop_button).setEnabled(mService.isRunning());
+
                 drag_data.setText(Long.toString(Math.round(mService.getDrag() * 1000000)));
                 double fivehundred = 500 / mService.getSpeed();
                 int mins = (int) Math.floor(fivehundred / 60.0);
                 int secs = (int) Math.floor(fivehundred % 60.0);
                 speed_data.setText(String.format("%02d:%02d", mins, secs));
+                distance_data.setText(Double.toString(mService.getDistance()));
 
                 long runtime = mService.getFinishTime().toMillis(true) - mService.getStartTime().toMillis(true);
                 runtime = runtime / 1000;
@@ -53,12 +48,18 @@ public class MainActivity extends Activity {
     };
 
     @Override
-    protected void onStart() {
-        super.onStart();
+    protected void onCreate(Bundle bundle) {
+        super.onCreate(bundle);
+        setContentView(R.layout.activity_main);
 
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
         // Bind to LocalService
         Intent intent = new Intent(this, SignalReceiverService.class);
-        bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+        bindService(intent, mConnection, BIND_AUTO_CREATE);
 
         speed_data = (TextView)findViewById(R.id.speed_data);
         time_data = (TextView)findViewById(R.id.time_data);
@@ -69,8 +70,9 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onStop() {
-        super.onStop();
+    protected void onPause() {
+        super.onPause();
+        handler.removeCallbacks(runnable);
         // Unbind from the service
         if (mBound) {
             unbindService(mConnection);
@@ -104,9 +106,7 @@ public class MainActivity extends Activity {
     private ServiceConnection mConnection = new ServiceConnection() {
 
         @Override
-        public void onServiceConnected(ComponentName className,
-                                       IBinder service) {
-            // We've bound to LocalService, cast the IBinder and get LocalService instance
+        public void onServiceConnected(ComponentName className, IBinder service) {
             SignalReceiverService.LocalBinder binder = (SignalReceiverService.LocalBinder) service;
             mService = binder.getService();
             mBound = true;
