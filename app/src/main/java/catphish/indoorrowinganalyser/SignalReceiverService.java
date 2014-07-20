@@ -1,15 +1,17 @@
 package catphish.indoorrowinganalyser;
 
 import android.app.Notification;
-import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.os.Binder;
 import android.os.IBinder;
+import android.support.v4.content.LocalBroadcastManager;
 import android.text.format.Time;
 import android.util.Log;
 
@@ -18,16 +20,15 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Random;
 
 public class SignalReceiverService extends Service {
     // Useful data from analysis
-    double drag = 0;
-    double distance = 0;
-    double speed = 0;
-    Time mStartTime = new Time();
-    Time mFinishTime = new Time();
-    boolean mRunning = false;
+    double drag;
+    double distance;
+    double speed;
+    Time mStartTime;
+    Time mFinishTime;
+    Notification noti;
 
     // DSP Settings
     private static final int RECORDER_SOURCE = MediaRecorder.AudioSource.DEFAULT;
@@ -38,100 +39,63 @@ public class SignalReceiverService extends Service {
     AudioRecord recorder;
     Thread recordingThread;
 
-    public double getDrag() {
-        return drag;
-    }
-
-    public double getSpeed() {
-        return speed;
-    }
-
-    public double getDistance() {
-        return distance;
-    }
-
-    public boolean isRunning() {
-        return mRunning;
-    }
-
-    public Time getStartTime() {
-        return mStartTime;
-    }
-
-    public Time getFinishTime() {
-        return mFinishTime;
-    }
-
-    private final IBinder mBinder = new LocalBinder();
-
-    public class LocalBinder extends Binder {
-        SignalReceiverService getService() {
-            // Return this instance of LocalService so clients can call public methods
-            return SignalReceiverService.this;
-        }
-    }
-
-    public boolean stopSession() {
-        recordingThread.interrupt();
-        mRunning = false;
-        return true;
-    }
-
     @Override
-    public int onStartCommand( Intent intent, int flags, int startId ) {
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.i("LocalService", "Received start id " + startId + ": " + intent);
         return START_NOT_STICKY;
+    }
+
+    private void updateNotification() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+
+        noti = new Notification.Builder(this)
+                .setContentTitle("Rowing")
+                .setContentText(mFinishTime.toString())
+                .setSmallIcon(R.drawable.ic_launcher)
+                .setContentIntent(pendingIntent)
+                .build();
+        startForeground(1, noti);
     }
 
     @Override
     public void onCreate() {
-        Notification noti = new Notification.Builder(this)
-                .setContentTitle("Title")
-                .setContentText("Body")
-                .setSmallIcon(R.drawable.ic_launcher)
-                .build();
-
-        new Thread(new AliveNotifier()).start();
-
-        NotificationManager mNotificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        mNotificationManager.notify(new Random().nextInt(), noti);
-
-    }
-
-    public boolean startSession() {
         int bufferSize = AudioRecord.getMinBufferSize(RECORDER_SAMPLERATE, RECORDER_CHANNELS, RECORDER_AUDIO_ENCODING);
         recorder = new AudioRecord(RECORDER_SOURCE, RECORDER_SAMPLERATE, RECORDER_CHANNELS, RECORDER_AUDIO_ENCODING, bufferSize * 20);
 
-        if((recorder.getState() != AudioRecord.STATE_INITIALIZED)) return false;
+        if((recorder.getState() != AudioRecord.STATE_INITIALIZED)) {
+            stopSelf();
+            return;
+        }
 
         recordingThread = new Thread(new SignalReceiver());
         recordingThread.start();
-        mRunning = true;
 
-        mStartTime.setToNow();
+        drag = 0;
         distance = 0;
+        speed = 0;
+        mStartTime = new Time();
+        mStartTime.setToNow();
+        mFinishTime = new Time();
+        mFinishTime.setToNow();
 
-        return true;
+        LocalBroadcastManager.getInstance(this).registerReceiver(mMessageReceiver, new IntentFilter("shutdown-service"));
+        updateNotification();
+
     }
 
-    @Override
-    public IBinder onBind(Intent intent) {
-        return mBinder;
-    }
-
-
-    public class AliveNotifier implements Runnable {
+    private BroadcastReceiver mMessageReceiver = new BroadcastReceiver() {
         @Override
-        public void run() {
-            while (true) {
-                Log.v("ALIVE", "I'm alive");
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-
-            }
+        public void onReceive(Context context, Intent intent) {
+            // Extract data included in the Intent
+            Log.d("receiver", "Got shutdown message");
+            recordingThread.interrupt();
         }
+    };
+
+    public IBinder onBind(Intent intent) {
+        return null;
     }
 
     public class SignalReceiver implements Runnable {
@@ -160,6 +124,9 @@ public class SignalReceiverService extends Service {
                 e.printStackTrace();
                 Thread.currentThread().interrupt();
             }
+            Intent intent = new Intent("status");
+            intent.putExtra("status", "started");
+            LocalBroadcastManager.getInstance(getApplicationContext()).sendBroadcast(intent);
 
             while (!Thread.currentThread().isInterrupted()) {
                 recorder.read(sData, 0, 100);
@@ -181,6 +148,11 @@ public class SignalReceiverService extends Service {
                 e.printStackTrace();
             }
             recorder.stop();
+            intent = new Intent("status");
+            intent.putExtra("status", "stopped");
+            LocalBroadcastManager.getInstance(getApplicationContext()).sendBroadcast(intent);
+
+            stopSelf();
         }
 
     }
@@ -238,6 +210,13 @@ public class SignalReceiverService extends Service {
                             }
                         }
                     }
+                    Intent intent = new Intent("data");
+                    intent.putExtra("speed", speed);
+                    intent.putExtra("distance", distance);
+                    intent.putExtra("drag", drag);
+                    intent.putExtra("time", mFinishTime.toMillis(true) - mStartTime.toMillis(true));
+                    LocalBroadcastManager.getInstance(getApplicationContext()).sendBroadcast(intent);
+                    updateNotification();
                 }
                 recent_samples = 0;
             }
